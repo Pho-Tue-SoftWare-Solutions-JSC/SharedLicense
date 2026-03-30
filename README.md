@@ -1,194 +1,243 @@
-# SharedLicense provisioning module for HostBill
+# SharedLicense Provisioning Module for HostBill
 
-Module provisioning license cho HostBill, tích hợp với **SharedLicense Reseller API**.
+Provisioning module for HostBill that integrates with the **SharedLicense Reseller API** (Bearer token authentication). It supports automated ordering, lifecycle management, license synchronization, admin tooling, and client widgets.
 
-## Tính năng
+> Important: **Creating an order may generate a billable license** on the SharedLicense side. Do not test `Create()` against paid products unless you intend to purchase.
 
-- Provisioning: **Create / Suspend / Unsuspend / Terminate / Renew**.
-- **Change IP** (có giới hạn số lần đổi IP phía HostBill).
-- Đồng bộ thông tin license từ API: status, key, IP, renew date, commands…
-- **Admin UI**: hiển thị license details qua AJAX + actions (Renew/Change IP/Reset IP counter/Refresh).
-- **Client widgets** tự đăng ký (License Details / Change IP / License Docs) và tự gán vào các sản phẩm dùng module.
-- Lấy danh sách product/config options từ API, có cache fallback `products.json`.
+## Table of contents
 
-## Yêu cầu
+- [Key features](#key-features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+	- [Server connection fields](#server-connection-fields)
+	- [Module options (resources)](#module-options-resources)
+	- [Dynamic product custom fields](#dynamic-product-custom-fields)
+	- [Product config options](#product-config-options)
+- [Provisioning lifecycle](#provisioning-lifecycle)
+- [Persisted service data (extra details)](#persisted-service-data-extra-details)
+- [Admin UI (AJAX panel + actions)](#admin-ui-ajax-panel--actions)
+- [Client widgets](#client-widgets)
+- [Product catalog cache (`products.json`)](#product-catalog-cache-productsjson)
+- [Logging and troubleshooting](#logging-and-troubleshooting)
+- [Security notes](#security-notes)
+- [License](#license)
 
-- HostBill (module type: `LicenseModule`).
-- PHP có extensions:
+## Key features
+
+- Provisioning actions: **Create / Suspend / Unsuspend / Terminate (Cancel) / Renew**.
+- **Change IP** action with an optional HostBill-side change limit.
+- Automatic synchronization from API: status, license key, IP, renew date, installation commands.
+- Admin service panel:
+	- loads license info via AJAX
+	- supports actions: Refresh, Change IP, Renew, Reset IP counter
+	- copy-to-clipboard for install commands
+- Client widgets (auto-registered & auto-assigned to products using the module):
+	- License Details
+	- Change IP
+	- License Docs (installation commands)
+- Product catalog is fetched from API (`GET /products`) with a fallback cache in `products.json`.
+
+## Requirements
+
+- HostBill module type: `LicenseModule`.
+- PHP extensions:
 	- `curl`
 	- `json`
-- Server HostBill có thể gọi outbound HTTPS đến API base URL.
+- Outbound HTTPS connectivity from your HostBill server to the configured API base URL.
 
-## Cấu trúc thư mục
+## Repository layout
 
-Trong workspace này module nằm tại `sharedlicense/` với các file chính:
+- `class.sharedlicense.php` — provisioning logic, payload building, synchronization, widget registration.
+- `class.api.php` — API client (cURL + JSON) using `Authorization: Bearer <token>`.
+- `admin/class.sharedlicense_controller.php` — admin controller for AJAX rendering and admin actions.
+- `templates/`
+	- `license.tpl` — injects the SharedLicense panel into the admin service view.
+	- `ajax.license.tpl` — HTML partial with license data and Bootbox forms.
+	- `license.js` — AJAX loader and UI handlers (refresh/copy/change IP/renew/reset).
+- `widgets/`
+	- `class.sharedlicense_widget.php` — base widget helper.
+	- `sl_licensedetails/` — client widget: details + renew.
+	- `sl_changeip/` — client widget: change IP + limit checks.
+	- `sl_licensedocs/` — client widget: install commands.
+- `products.json` — API response cache (generated automatically when API is reachable).
 
-- `class.sharedlicense.php`: logic provisioning, mapping dữ liệu, widgets registration.
-- `class.api.php`: HTTP client gọi SharedLicense API (Bearer token + JSON).
-- `admin/class.sharedlicense_controller.php`: controller Admin (ajax license details, actions).
-- `templates/`:
-	- `license.tpl`: chèn block UI vào trang service trong Admin.
-	- `ajax.license.tpl`: HTML render license details & bootbox forms.
-	- `license.js`: AJAX loader + handlers (refresh/copy/change IP/renew/reset).
-- `widgets/`:
-	- `class.sharedlicense_widget.php`: base widget.
-	- `sl_licensedetails/`, `sl_changeip/`, `sl_licensedocs/`: widgets cho Client Area.
-- `products.json`: cache fallback (sinh tự động khi gọi API thành công).
+## API and authentication
 
-## API & Auth
-
-Module gọi API theo header:
+All API calls are JSON over HTTP with:
 
 - `Authorization: Bearer <token>`
 - `Accept: application/json`
 
-Base URL mặc định:
+Default API base URL (can be overridden per HostBill server):
 
 - `https://sharedlicense.com/client/modules/addons/LicReseller/api`
 
-Có thể override trong cấu hình **Server** của HostBill.
+API endpoints used by this module (see `class.api.php`):
 
-## Cài đặt
+- `GET /account`
+- `GET /products`
+- `POST /products/{productId}/order`
+- `GET /licenses/{licenseId}`
+- `POST /licenses/{licenseId}/renew`
+- `POST /licenses/{licenseId}/suspend`
+- `POST /licenses/{licenseId}/unsuspend`
+- `POST /licenses/{licenseId}/cancel`
+- `POST /licenses/{licenseId}/change-ip`
 
-1. Copy thư mục module `sharedlicense/` vào đúng vị trí modules của HostBill, ví dụ:
+## Installation
+
+1. Copy the module folder into your HostBill modules directory, e.g.:
 	 - `.../includes/modules/Hosting/sharedlicense/`
 
-2. Trong HostBill Admin:
-	 - Vào **Settings → Modules** (hoặc trang quản lý modules tùy phiên bản HostBill)
-	 - Enable module **SharedLicense**.
+2. In HostBill Admin, enable the module **SharedLicense**.
 
-3. Tạo/Chọn **Server** cho module:
-	 - **API Base URL** (Server Hostname)
-	 - **Bearer Token** (Server Username)
+3. Create/select a HostBill **Server** record for this module and fill the connection fields (see below).
 
-4. Gán module SharedLicense cho Product trong HostBill như các module provisioning khác.
+4. Assign the module to a HostBill product like any other provisioning module.
 
-5. (Khuyến nghị) Thử **Test Connection** trước khi đặt hàng thật.
+5. Recommended: use **Test Connection** before placing real orders.
 
-## Cấu hình trong HostBill
+## Configuration
 
-### 1) Server fields (kết nối API)
+### Server connection fields
 
-Trong module, các field được map như sau (xem `SharedLicense::$serverFieldsDescription`):
+Configured in HostBill *Server* (see `SharedLicense::$serverFieldsDescription`):
 
-- **Hostname** → `API Base URL`
-- **Username** → `Bearer Token`
+- **Hostname** → API Base URL
+- **Username** → Bearer Token
 
-Ghi chú:
+Notes:
 
-- Password/IPAddress không dùng.
+- Password/IP Address fields are not used.
+- Base URL is normalized (trailing `/` is removed).
 
-### 2) Options / Resources (cấu hình per-service)
+### Module options (resources)
 
-Các option chính (xem `SharedLicense::$options`):
+Core options (see `SharedLicense::$options`):
 
-- `product` (**loadable**): chọn Product ID từ catalog của SharedLicense.
-	- Danh sách được load từ API `GET /products`.
-- `ip`: Licensed IP.
-	- Dùng trong payload order và hiển thị.
-	- Module sẽ cố lấy từ (ưu tiên cao → thấp): resource `ip` → account config `ip` → extra_details `license_ip` → NAT IP → account domain (nếu là IP).
-- `new_ip`: New IP Address (dùng cho action Change IP).
-- `max_ip_changes`: giới hạn số lần đổi IP phía HostBill.
-	- `0` = không giới hạn.
-- `suspend_reason`: lý do suspend gửi lên API.
+- `product` *(loadable)*: SharedLicense Product ID.
+	- Populated from the API catalog (`GET /products`).
+- `ip`: Licensed IP address.
+	- Used in order payload and displayed in service details.
+	- Resolution order (highest → lowest):
+		1) module resource `ip`
+		2) account config `ip`
+		3) extra_details `license_ip`
+		4) extra_details `nat_ip`
+		5) extra_details `ip`
+		6) service domain if it is a valid IP
+- `new_ip`: New IP address (used by Change IP action).
+- `max_ip_changes`: HostBill-side limit for IP changes.
+	- `0` means unlimited (no HostBill-side enforcement).
+- `suspend_reason`: Optional reason sent to the remote API during suspend.
 
-### 3) Custom fields động theo Product (SharedLicense customfields)
+### Dynamic product custom fields
 
-Khi chọn `product`, module sẽ đọc `customfields` mà API trả về cho product đó và **tạo option động** dạng:
+When a product is selected, the module reads the product `customfields` from the API and dynamically exposes corresponding HostBill options:
 
 - `sharedlicense_cf_<fieldId>`
 
-Ví dụ: `sharedlicense_cf_12`.
+Example:
 
-Giá trị custom field khi order được build theo thứ tự:
+- `sharedlicense_cf_12`
 
-1. Nếu bạn cấu hình option `sharedlicense_cf_<id>` → dùng giá trị đó.
-2. Nếu không cấu hình, module sẽ **guess** theo “role” (xem `detectCustomFieldRole`):
-	 - `ip` → lấy Licensed IP
-	 - `hostname` → lấy domain/hostname của service (`account_details['domain']`)
-	 - `license_key` → dùng `license_key` đã có; nếu chưa có thì dùng `HB-<serviceId>`
+Custom field values sent during order are determined as follows:
 
-Nếu field bắt buộc (`required`) mà không thể suy ra giá trị hợp lệ, Create sẽ fail với lỗi.
+1. If `sharedlicense_cf_<id>` is configured, that value is used.
+2. Otherwise, the module attempts to infer values based on an internal role detection (`detectCustomFieldRole`):
+	 - `ip` → the resolved licensed IP
+	 - `hostname` → the service domain/hostname
+	 - `license_key` → existing `license_key` if present, otherwise `HB-<serviceId>`
 
-### 4) Config options theo Product (SharedLicense configOptions)
+If the remote product marks a field as required and the module cannot provide a value, **Create will fail** with a clear error message.
 
-Nếu API trả về `configOptions`, module sẽ gửi `configoptions` trong payload order:
+### Product config options
 
-- Ưu tiên `default` nếu có.
-- Nếu không có default, module chọn option đầu tiên trong danh sách `options`.
+If the API provides `configOptions` for a product, the module sends `configoptions` during order:
 
-## Luồng provisioning & hành vi
+- Uses `default` if provided.
+- Otherwise selects the first available option ID.
+
+## Provisioning lifecycle
 
 ### Create (Order)
 
-File: `class.sharedlicense.php` → `Create()`
+Implementation: `SharedLicense::Create()`
 
-- Load product được chọn.
-- Build payload:
+- Loads the selected product from the API catalog.
+- Builds order payload:
 	- `customfields` (object)
 	- `configoptions` (object)
-- Gọi API: `POST /products/{id}/order`
-- Lưu các trường chính vào extra_details:
-	- `remote_service_id`, `product_id`, `product_name`, `product_logo`, `status`, `message`…
-- Sau đó gọi `syncRemoteLicenseDetails()` để đồng bộ thông tin.
+- Calls: `POST /products/{id}/order`
+- Persists essential service data into extra_details.
+- Calls `syncRemoteLicenseDetails()` to fetch and store the authoritative remote state.
 
-**Cảnh báo quan trọng**: action Create có thể tạo license tính phí ở SharedLicense. Không test Create trên product trả phí nếu không chủ đích.
+Billing warning:
+
+- Ordering creates a license on the reseller platform and **can be billable**.
 
 ### Suspend / Unsuspend / Terminate
 
-- Suspend → `POST /licenses/{id}/suspend` (có thể kèm `reason`).
-- Unsuspend → `POST /licenses/{id}/unsuspend`.
-- Terminate → `POST /licenses/{id}/cancel`.
+Implementation: `SharedLicense::Suspend()`, `SharedLicense::Unsuspend()`, `SharedLicense::Terminate()`
 
-Module sẽ cập nhật `status`, `last_action`, `last_remote_action`, `message` và (thường) sync lại details.
+- Suspend → `POST /licenses/{id}/suspend` (optional `reason`)
+- Unsuspend → `POST /licenses/{id}/unsuspend`
+- Terminate (cancel) → `POST /licenses/{id}/cancel`
 
-### Renewal / RenewNow
+The module updates `status`, `last_action`, `last_remote_action`, `message`, and usually syncs remote details.
 
-- `Renewal()` / `RenewNow()` → `POST /licenses/{id}/renew`.
+### Renew
+
+Implementation: `SharedLicense::Renewal()` / `SharedLicense::RenewNow()`
+
+- Calls: `POST /licenses/{id}/renew`
 
 ### Change IP
 
-- Admin: action `changeip` trong `admin/class.sharedlicense_controller.php`.
-- Client: widget `sl_changeip`.
+Implementation: `SharedLicense::LicenseChangeIp()`
 
-Quy tắc:
+- Validates IPv4/IPv6 using `FILTER_VALIDATE_IP`.
+- Enforces HostBill-side limit:
+	- if `max_ip_changes > 0` and `change_ip_count >= max_ip_changes` → blocked.
+- Calls: `POST /licenses/{id}/change-ip` with payload `{ "ip": "x.x.x.x" }`.
+- Increments `change_ip_count` and persists the new IP to:
+	- extra_details (`license_ip`)
+	- account config `ip` (so future payloads remain consistent)
 
-- Validate IP bằng `FILTER_VALIDATE_IP`.
-- Nếu `max_ip_changes > 0` và `change_ip_count >= max_ip_changes` → chặn (HostBill-side).
-- Gọi API: `POST /licenses/{id}/change-ip` với payload `{ "ip": "x.x.x.x" }`.
-- Tăng `change_ip_count` và lưu IP mới vào `license_ip` + cập nhật config `ip`.
+### Reset IP counter (local only)
 
-### Reset IP Counter (HostBill-side)
+Implementation: `SharedLicense::ResetChangeIpCount()`
 
-- Action admin `resetipcount`.
-- Chỉ reset `change_ip_count` ở extra_details, **không gọi API**.
+- Resets only HostBill’s `change_ip_count` stored in extra_details.
+- Does **not** call the remote API.
 
-## Dữ liệu lưu trong service (extra_details)
+## Persisted service data (extra details)
 
-Module lưu các keys trong `SharedLicense::$details` (một phần):
+The module stores and maintains service metadata in extra_details (see `SharedLicense::$details`), including:
 
 - `remote_service_id`
 - `license_key`
 - `license_ip`
 - `product_id`, `product_name`, `product_logo`
 - `status`, `message`
-- `change_ip_count`, `change_ip_limit` (remote)
+- `change_ip_count`, `change_ip_limit`
 - `auto_renew`, `renew_date`, `reg_date`
 - `suspended_reason`
-- `commands_json` (raw JSON của lệnh cài đặt)
+- `commands_json`
 - `last_action`, `last_remote_action`
 
-Những giá trị này được update bằng `syncRemoteLicenseDetails()` và hiển thị ở Admin/Widgets.
+Most values are refreshed via `syncRemoteLicenseDetails()`.
 
-## Admin UI
+## Admin UI (AJAX panel + actions)
 
-### Hiển thị license block trong trang service
+Admin service page integration:
 
-- Template injection: `templates/license.tpl`
-- AJAX body: `templates/ajax.license.tpl`
+- Injection: `templates/license.tpl`
+- AJAX partial: `templates/ajax.license.tpl`
 - JS loader: `templates/license.js`
 
-Admin UI có các nút:
+Admin actions provided:
 
 - Refresh Data
 - Change IP
@@ -196,98 +245,78 @@ Admin UI có các nút:
 - Renew Now
 - Copy installation commands
 
-Endpoint phía admin:
+Admin endpoints (controller: `admin/class.sharedlicense_controller.php`):
 
-- `?cmd=sharedlicense&action=license&id=<serviceId>` → render `ajax.license.tpl`
+- `?cmd=sharedlicense&action=license&id=<serviceId>` — returns AJAX HTML.
 - `?cmd=sharedlicense&action=changeip&id=<serviceId>`
 - `?cmd=sharedlicense&action=renew&id=<serviceId>`
 - `?cmd=sharedlicense&action=resetipcount&id=<serviceId>`
 
-## Client Widgets
+Note:
 
-Widgets được đăng ký khi module upgrade (xem `registerClientWidgets()`):
+- Mutating actions require `token_valid`.
 
-1. `sl_licensedetails`: hiển thị thông tin license & Renew Now.
-2. `sl_changeip`: form đổi IP, có check limit.
-3. `sl_licensedocs`: hiển thị installation commands.
+## Client widgets
 
-Module cố gắng auto-assign các widget này vào mọi Product đang dùng SharedLicense module.
+Widgets are registered on upgrade via `registerClientWidgets()` and auto-assigned to products that use this module:
 
-## Cache product catalog (`products.json`)
+1. `sl_licensedetails` — shows key license fields and supports renew.
+2. `sl_changeip` — allows clients to change IP (with HostBill-side limit checks).
+3. `sl_licensedocs` — displays installation commands returned by the API.
 
-- Lần đầu gọi `GET /products` thành công, module sẽ ghi response vào `products.json`.
-- Nếu API lỗi/timeout, module sẽ fallback đọc `products.json` để vẫn load được danh sách product.
+## Product catalog cache (`products.json`)
 
-Khuyến nghị:
+- On successful catalog fetch, the raw API response is written to `products.json`.
+- If the API is unreachable, the module attempts to load the cached catalog from `products.json`.
 
-- Không chỉnh sửa `products.json` thủ công trừ khi bạn hiểu format.
-- Có thể xóa file để buộc module reload catalog từ API.
+Operational guidance:
 
-## Logging & Debug
+- Do not edit `products.json` manually unless you understand the response schema.
+- Delete `products.json` to force a fresh catalog reload.
 
-Nếu HostBill có `HBDebug::debug`, module sẽ log request/response:
+## Logging and troubleshooting
 
-- Request log che token: `Bearer ***`.
+### Debug logging
 
-Khi gặp lỗi:
+If `HBDebug::debug` is available, the module logs API request/response metadata. Authorization is masked as `Bearer ***`.
 
-1. Xác nhận token đúng và còn hạn.
-2. Xác nhận base URL đúng (không dư dấu `/`).
-3. Kiểm tra firewall/outbound rules.
-4. Thử `Test Connection` trong HostBill.
+### Common issues
 
-## Troubleshooting (các lỗi thường gặp)
+#### “API token is empty”
 
-### 1) “API token is empty”
+- The Bearer token is missing in the HostBill server configuration.
 
-- Chưa nhập **Bearer Token** trong Server Username.
+#### “Selected product does not exist in SharedLicense product catalog”
 
-### 2) “Selected product does not exist…”
+- The configured product ID no longer exists, or catalog loading failed and no cache exists.
 
-- Product ID cấu hình không còn tồn tại trên SharedLicense.
-- API không load được catalog và cache `products.json` không có.
+#### Create fails due to missing required custom field
 
-### 3) Create fail vì thiếu custom field bắt buộc
+- Configure the dynamic option `sharedlicense_cf_<id>` or ensure the module can infer it from IP/hostname/license_key.
 
-- Product yêu cầu custom field `required`.
-- Hãy cấu hình option `sharedlicense_cf_<id>` hoặc đảm bảo module có thể guess được (IP/hostname/license_key).
+#### Change IP is blocked
 
-### 4) Không đổi được IP (limit)
-
-- `max_ip_changes` phía HostBill đã đạt ngưỡng.
-- Có thể dùng “Reset IP Counter” (chỉ reset local counter) nếu policy cho phép.
+- HostBill-side limit (`max_ip_changes`) has been reached.
+- Admin may use “Reset IP Counter” (local only) if your policy allows.
 
 ## Security notes
 
-- Bearer token là secret: chỉ lưu trong Server config của HostBill.
-- Module không ghi token ra log (được mask).
-- Không expose endpoint trực tiếp; action admin yêu cầu `token_valid` cho các thao tác thay đổi (changeip/renew/reset).
+- Treat the Bearer token as a secret; store it only in HostBill server config.
+- Tokens are not written to logs (masked when debug logging is enabled).
+- Mutating admin actions are protected by HostBill security token validation (`token_valid`).
 
-## Gợi ý vận hành
+## License
 
-- Nên tạo một product test (miễn phí / sandbox) trên SharedLicense để test Create.
-- Khi cần đồng bộ lại dữ liệu license, dùng **Refresh Data** (admin) hoặc thêm `&refresh=1` cho widget.
+This project is licensed under:
 
-## Version
+- **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`)
 
-- Current module version: `1.0.0` (xem `SharedLicense::$version`).
-
-## License (GPL v3)
-
-Source code trong thư mục `sharedlicense/` được phát hành theo giấy phép:
-
-- **GNU General Public License v3.0 (hoặc mới hơn)** — `GPL-3.0-or-later`
-
-Toàn văn giấy phép nằm tại file `LICENSE`.
-
-### Ghi nhận quyền tác giả
+See `LICENSE` for the full text.
 
 Copyright (C) 2026 **Nguyen Thanh An by Pho Tue SoftWare Solutions JSC**.
 
-Bạn được phép sử dụng/sao chép/sửa đổi/phân phối theo điều khoản của GPL v3 (hoặc mới hơn), nhưng cần **giữ nguyên các thông báo bản quyền và license** theo yêu cầu của GPL.
+Trademarks:
 
-### Lưu ý về bên thứ ba
-
-- “HostBill” và “SharedLicense” có thể là nhãn hiệu/brand của các bên liên quan; module này không khẳng định bất kỳ quyền sở hữu nhãn hiệu nào.
+- HostBill and SharedLicense may be trademarks of their respective owners.
 
 
